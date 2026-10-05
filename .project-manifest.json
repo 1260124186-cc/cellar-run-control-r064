@@ -24,6 +24,11 @@
       "responsibility": "entities, validation, state transitions, and metrics"
     },
     {
+      "id": "ratelimit",
+      "path": "internal/ratelimit",
+      "responsibility": "per-terminal per-category sliding-window quotas and durable blocked pairs"
+    },
+    {
       "id": "service",
       "path": "internal/service",
       "responsibility": "orchestrate formulas, vessels, runs, and observations"
@@ -36,7 +41,7 @@
     {
       "id": "httpapi",
       "path": "internal/httpapi",
-      "responsibility": "route HTTP requests and map protocol errors"
+      "responsibility": "route HTTP requests, gate writes by local quota, and map protocol errors"
     },
     {
       "id": "workflowcheck",
@@ -50,7 +55,8 @@
       "resource_lifecycle",
       "error_propagation",
       "concurrency",
-      "validation_boundary"
+      "validation_boundary",
+      "rate_limiting"
     ]
   },
   "workflows": [
@@ -111,6 +117,26 @@
         "httpapi",
         "service",
         "domain",
+        "storage"
+      ]
+    },
+    {
+      "id": "quota-enforcement",
+      "name": "Reject burst writes per terminal and category while keeping reads open",
+      "entry": "POST /v1/formulas",
+      "steps": [
+        "exhaust a category quota from one terminal and receive an explicit wait",
+        "confirm health, detail reads, and quota status remain available",
+        "cross window and penalty boundaries under a fixed clock",
+        "adjust limits at runtime and reopen the controller mid-penalty"
+      ],
+      "success": "only accepted writes change state and the block survives a restart with an explainable response",
+      "failure": "a concurrent burst still yields exactly one decision per request and rejected requests never touch business state",
+      "verification": "the check issues real HTTP requests with a fixed clock, including a simulated controller restart",
+      "module_ids": [
+        "httpapi",
+        "ratelimit",
+        "config",
         "storage"
       ]
     }

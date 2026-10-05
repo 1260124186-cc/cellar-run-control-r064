@@ -89,6 +89,8 @@ func statusForCode(code domain.Code) int {
 		return http.StatusConflict
 	case domain.CodeRevisionConflict:
 		return http.StatusPreconditionFailed
+	case domain.CodeQuotaExceeded:
+		return http.StatusTooManyRequests
 	case domain.CodeStorage:
 		return http.StatusInternalServerError
 	default:

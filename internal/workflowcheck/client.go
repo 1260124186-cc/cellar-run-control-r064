@@ -16,8 +16,9 @@ type client struct {
 }
 
 type response struct {
-	status int
-	body   []byte
+	status  int
+	body    []byte
+	headers http.Header
 }
 
 func newClient(baseURL string) *client {
@@ -34,6 +35,7 @@ func (c *client) call(
 	path string,
 	payload any,
 	expectedVersion *int64,
+	extraHeaders ...http.Header,
 ) (response, error) {
 	var body io.Reader
 	if payload != nil {
@@ -53,6 +55,13 @@ func (c *client) call(
 	if expectedVersion != nil {
 		request.Header.Set("X-Expected-Version", fmt.Sprintf("%d", *expectedVersion))
 	}
+	for _, headers := range extraHeaders {
+		for name, values := range headers {
+			for _, value := range values {
+				request.Header.Add(name, value)
+			}
+		}
+	}
 	raw, err := c.http.Do(request)
 	if err != nil {
 		return response{}, fmt.Errorf("perform request: %w", err)
@@ -62,7 +71,13 @@ func (c *client) call(
 	if err != nil {
 		return response{}, fmt.Errorf("read response: %w", err)
 	}
-	return response{status: raw.StatusCode, body: content}, nil
+	return response{status: raw.StatusCode, body: content, headers: raw.Header}, nil
+}
+
+func terminalHeader(terminal string) http.Header {
+	headers := http.Header{}
+	headers.Set("X-Cellar-Terminal", terminal)
+	return headers
 }
 
 func (r response) decode(target any) error {
@@ -82,6 +97,14 @@ func (r response) errorCode() string {
 		return ""
 	}
 	return body.Error.Code
+}
+
+func (r response) retryAfter() (string, error) {
+	value := r.headers.Get("Retry-After")
+	if value == "" {
+		return "", fmt.Errorf("response is missing the Retry-After header: %s", strings.TrimSpace(string(r.body)))
+	}
+	return value, nil
 }
 
 func requireStatus(actual response, expected int, operation string) error {

@@ -157,9 +157,12 @@ domain rules, and snapshot storage.
 - `internal/config`: environment and command-line configuration.
 - `internal/clock`: deterministic clock boundary for production and checks.
 - `internal/domain`: entities, validation, state transitions, and metrics.
+- `internal/ratelimit`: local per-terminal, per-category write quotas and
+  durable block records.
 - `internal/service`: use-case orchestration and revision coordination.
 - `internal/storage`: snapshot repository, atomic replacement, and locking.
-- `internal/httpapi`: routing, strict JSON decoding, error mapping, and health.
+- `internal/httpapi`: routing, strict JSON decoding, error mapping, quota
+  gating, and health.
 - `internal/workflowcheck`: real HTTP workflow checks used by the executable.
 
 The dependency direction is:
@@ -169,6 +172,10 @@ The dependency direction is:
 `service -> storage`
 
 `storage -> domain`
+
+`httpapi -> ratelimit -> clock`
+
+`config -> ratelimit -> clock`
 
 The domain package does not import outer packages.
 
@@ -189,7 +196,41 @@ updated aggregate and its version. A failed write returns:
 Write requests may include `X-Expected-Version`. When present, the service
 rejects a stale write instead of overwriting newer state.
 
-`GET /healthz` returns process health and the current snapshot revision.
+`GET /healthz` returns process health and the current snapshot revision. It is
+never gated by quotas.
+
+### Local Write Quotas
+
+Mutating `/v1` requests carry a local quota keyed by terminal and operation
+category. Categories are `formula`, `vessel`, `run`, and `observation`
+(appended gravity observations are counted separately from other run writes).
+
+- A terminal is the `X-Cellar-Terminal` request header when well formed,
+  otherwise the peer IP address.
+- Each category allows a configured number of accepted writes in a trailing
+  window. The write that exceeds the limit starts a fixed penalty block whose
+  duration is at least the longest window.
+- Evaluation happens before request-body decoding and before any business
+  call, so a rejected write cannot touch business state or the serialized
+  store. Every decision is made under one lock; bursts, requests crossing a
+  window boundary, and concurrent runtime configuration changes each observe
+  exactly one consistent outcome.
+- A blocked write returns HTTP 429 with stable code `quota_exceeded`,
+  `Retry-After` in seconds, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and
+  `X-RateLimit-Reset`.
+- `GET /healthz`, all read-only detail/list endpoints, and
+  `GET /quota-status` are never gated. `/quota-status` reports per-category
+  remaining allowance and an explainable active block without recording a
+  request.
+- Runtime rule changes come from an optional JSON quota file reloaded on
+  `SIGHUP`; an invalid file is rejected and leaves the running rules in force.
+  Raising a limit never removes an active penalty.
+- Active blocks are persisted to `quota-blocks.json` in the data directory
+  with the same atomic replacement protocol as the snapshot. Window history is
+  not persisted. After a restart, still-active blocks are restored and marked
+  as such in the response (`restart_restored: true`) and in `/quota-status`;
+  expired blocks are pruned. A corrupt blocks file stops startup.
+- Quotas can be disabled entirely with `CELLAR_CONTROL_QUOTA_ENABLED=false`.
 
 ## Persistence And Concurrency
 
@@ -217,6 +258,14 @@ behavior, and exit without external services:
 - `go run ./cmd/fermentctl check formula-approval`
 - `go run ./cmd/fermentctl check vessel-run-lifecycle`
 - `go run ./cmd/fermentctl check observations-completion`
+- `go run ./cmd/fermentctl check quota-enforcement`
+
+The quota-enforcement check runs the real HTTP handler against a fixed clock
+and covers burst rejection with an explicit wait, health/read exemption,
+per-terminal and per-category isolation, sliding-window rollover, rejected
+requests leaving business state unchanged, runtime limit adjustment, a
+concurrent burst producing exactly one decision per request, and block
+restoration after a controller restart.
 
 ## Scope Limits
 

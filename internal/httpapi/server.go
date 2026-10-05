@@ -3,21 +3,25 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ratelimit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 )
 
-func NewHandler(app *service.Service) http.Handler {
+func NewHandler(app *service.Service, limiter *ratelimit.Limiter) http.Handler {
 	mux := http.NewServeMux()
 	registerFormulaRoutes(mux, app)
 	registerVesselRoutes(mux, app)
 	registerRunRoutes(mux, app)
+	if limiter != nil {
+		registerQuotaRoutes(mux, limiter)
+	}
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, map[string]any{
 			"status":   "ok",
 			"revision": app.Revision(),
 		})
 	})
-	return withRecovery(mux)
+	return withRecovery(withQuota(limiter, mux))
 }
 
 func withRecovery(next http.Handler) http.Handler {

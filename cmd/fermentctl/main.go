@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/config"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/httpapi"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ratelimit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/storage"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/workflowcheck"
@@ -62,23 +64,53 @@ func serve() error {
 		return err
 	}
 	app := service.New(store, clock.System{})
+
+	var limiter *ratelimit.Limiter
+	if cfg.QuotaEnabled {
+		limiter, err = ratelimit.Open(
+			filepath.Join(cfg.DataDir, "quota-blocks.json"), cfg.Quota, clock.System{})
+		if err != nil {
+			return err
+		}
+	}
+
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           httpapi.NewHandler(app),
+		Handler:           httpapi.NewHandler(app, limiter),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 	}
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
-		<-stop
-		ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("graceful shutdown failed: %v", err)
+		for received := range signals {
+			if received == syscall.SIGHUP {
+				if limiter == nil {
+					continue
+				}
+				// Swap quota rules from the configured file atomically; an
+				// invalid file leaves the running rules untouched.
+				reloaded, source, reloadErr := config.ReloadQuota()
+				if reloadErr != nil {
+					log.Printf("quota reload ignored: %v", reloadErr)
+					continue
+				}
+				if reloadErr := limiter.UpdateConfig(reloaded); reloadErr != nil {
+					log.Printf("quota reload from %s rejected: %v", source, reloadErr)
+					continue
+				}
+				log.Printf("quota configuration reloaded from %s", source)
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			if shutdownErr := server.Shutdown(ctx); shutdownErr != nil {
+				log.Printf("graceful shutdown failed: %v", shutdownErr)
+			}
+			cancel()
+			return
 		}
 	}()
 
