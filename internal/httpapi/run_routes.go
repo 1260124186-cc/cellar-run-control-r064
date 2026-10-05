@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ratelimit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 )
 
@@ -26,8 +27,22 @@ type observationRequest struct {
 	Note         string    `json:"note"`
 }
 
-func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
-	mux.HandleFunc("POST /v1/runs", func(response http.ResponseWriter, request *http.Request) {
+func registerRunRoutes(mux *http.ServeMux, app *service.Service, limiter *ratelimit.Limiter) {
+	mux.HandleFunc("POST /v1/runs", guarded(limiter, ratelimit.CategoryRun, createRun(app)))
+	// Read-only routes are never blocked by a terminal quota.
+	mux.HandleFunc("GET /v1/runs", listRuns(app))
+	mux.HandleFunc("GET /v1/runs/{id}", getRun(app))
+	mux.HandleFunc("POST /v1/runs/{id}/reserve", guarded(limiter, ratelimit.CategoryRun, reserveRun(app)))
+	mux.HandleFunc("POST /v1/runs/{id}/start", guarded(limiter, ratelimit.CategoryRun, startRun(app)))
+	mux.HandleFunc("POST /v1/runs/{id}/observations",
+		guarded(limiter, ratelimit.CategoryObservation, appendObservation(app)))
+	mux.HandleFunc("POST /v1/runs/{id}/conditioning", guarded(limiter, ratelimit.CategoryRun, beginConditioning(app)))
+	mux.HandleFunc("POST /v1/runs/{id}/complete", guarded(limiter, ratelimit.CategoryRun, completeRun(app)))
+	mux.HandleFunc("POST /v1/runs/{id}/abort", guarded(limiter, ratelimit.CategoryRun, abortRun(app)))
+}
+
+func createRun(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		body, err := decodeJSON[createRunRequest](response, request)
 		if !handleDecode(response, err) {
 			return
@@ -43,27 +58,33 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusCreated, run)
-	})
+	}
+}
 
-	mux.HandleFunc("GET /v1/runs", func(response http.ResponseWriter, _ *http.Request) {
+func listRuns(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, _ *http.Request) {
 		runs, err := app.ListRuns()
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
 		writeJSON(response, http.StatusOK, map[string]any{"runs": runs})
-	})
+	}
+}
 
-	mux.HandleFunc("GET /v1/runs/{id}", func(response http.ResponseWriter, request *http.Request) {
+func getRun(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		run, err := app.GetRun(request.PathValue("id"))
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
 		writeJSON(response, http.StatusOK, run)
-	})
+	}
+}
 
-	mux.HandleFunc("POST /v1/runs/{id}/reserve", func(response http.ResponseWriter, request *http.Request) {
+func reserveRun(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		body, err := decodeJSON[reserveRunRequest](response, request)
 		if !handleDecode(response, err) {
 			return
@@ -81,9 +102,11 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, map[string]any{"run": run, "vessel": vessel})
-	})
+	}
+}
 
-	mux.HandleFunc("POST /v1/runs/{id}/start", func(response http.ResponseWriter, request *http.Request) {
+func startRun(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		expected, err := expectedVersion(request)
 		if !handleDecode(response, err) {
 			return
@@ -95,9 +118,11 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, map[string]any{"run": run, "vessel": vessel})
-	})
+	}
+}
 
-	mux.HandleFunc("POST /v1/runs/{id}/observations", func(response http.ResponseWriter, request *http.Request) {
+func appendObservation(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		body, err := decodeJSON[observationRequest](response, request)
 		if !handleDecode(response, err) {
 			return
@@ -114,9 +139,11 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, run)
-	})
+	}
+}
 
-	mux.HandleFunc("POST /v1/runs/{id}/conditioning", func(response http.ResponseWriter, request *http.Request) {
+func beginConditioning(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		expected, err := expectedVersion(request)
 		if !handleDecode(response, err) {
 			return
@@ -128,9 +155,11 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, run)
-	})
+	}
+}
 
-	mux.HandleFunc("POST /v1/runs/{id}/complete", func(response http.ResponseWriter, request *http.Request) {
+func completeRun(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		expected, err := expectedVersion(request)
 		if !handleDecode(response, err) {
 			return
@@ -142,9 +171,11 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, map[string]any{"run": run, "vessel": vessel})
-	})
+	}
+}
 
-	mux.HandleFunc("POST /v1/runs/{id}/abort", func(response http.ResponseWriter, request *http.Request) {
+func abortRun(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		expected, err := expectedVersion(request)
 		if !handleDecode(response, err) {
 			return
@@ -156,5 +187,5 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, map[string]any{"run": run, "vessel": vessel})
-	})
+	}
 }

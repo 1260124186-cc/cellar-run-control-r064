@@ -7,6 +7,7 @@ import (
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/httpapi"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ratelimit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/storage"
 )
@@ -18,31 +19,53 @@ func Run(name string) error {
 	}
 	defer os.RemoveAll(dataDir)
 
-	store, err := storage.Open(dataDir)
+	server, err := newCheckServer(dataDir)
 	if err != nil {
 		return err
 	}
-	app := service.New(store, clock.System{})
-	server := httptest.NewServer(httpapi.NewHandler(app))
-	defer server.Close()
-	api := newClient(server.URL)
+	defer server.close()
+	api := newClient(server.url)
 
 	switch name {
 	case "formula-approval":
-		if err := formulaApproval(api); err != nil {
-			return err
-		}
+		err = formulaApproval(api)
 	case "vessel-run-lifecycle":
-		if err := vesselRunLifecycle(api); err != nil {
-			return err
-		}
+		err = vesselRunLifecycle(api)
 	case "observations-completion":
-		if err := observationsCompletion(api); err != nil {
-			return err
-		}
+		err = observationsCompletion(api)
+	case "rate-limiting":
+		err = rateLimiting(dataDir)
 	default:
 		return fmt.Errorf("unknown workflow check %q", name)
 	}
+	if err != nil {
+		return err
+	}
 	fmt.Printf("workflow check passed: %s\n", name)
 	return nil
+}
+
+type checkServer struct {
+	url     string
+	server  *httptest.Server
+	limiter *ratelimit.Limiter
+}
+
+func newCheckServer(dataDir string) (*checkServer, error) {
+	store, err := storage.Open(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	app := service.New(store, clock.System{})
+	limiter, err := ratelimit.NewFor(dataDir, clock.System{})
+	if err != nil {
+		return nil, err
+	}
+	server := httptest.NewServer(httpapi.NewHandler(app, limiter))
+	return &checkServer{url: server.URL, server: server, limiter: limiter}, nil
+}
+
+func (c *checkServer) close() {
+	c.server.Close()
+	c.limiter.Close()
 }

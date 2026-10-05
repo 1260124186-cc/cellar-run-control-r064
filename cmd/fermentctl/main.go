@@ -13,6 +13,7 @@ import (
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/config"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/httpapi"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ratelimit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/storage"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/workflowcheck"
@@ -62,9 +63,14 @@ func serve() error {
 		return err
 	}
 	app := service.New(store, clock.System{})
+	limiter, err := ratelimit.NewFor(cfg.DataDir, clock.System{})
+	if err != nil {
+		return err
+	}
+	defer limiter.Close()
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           httpapi.NewHandler(app),
+		Handler:           httpapi.NewHandler(app, limiter),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,

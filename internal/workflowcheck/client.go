@@ -16,8 +16,9 @@ type client struct {
 }
 
 type response struct {
-	status int
-	body   []byte
+	status  int
+	body    []byte
+	headers http.Header
 }
 
 func newClient(baseURL string) *client {
@@ -34,6 +35,17 @@ func (c *client) call(
 	path string,
 	payload any,
 	expectedVersion *int64,
+) (response, error) {
+	return c.callAs(method, path, payload, expectedVersion, "")
+}
+
+// callAs issues a request on behalf of an explicit cellar terminal id.
+func (c *client) callAs(
+	method string,
+	path string,
+	payload any,
+	expectedVersion *int64,
+	terminal string,
 ) (response, error) {
 	var body io.Reader
 	if payload != nil {
@@ -53,6 +65,9 @@ func (c *client) call(
 	if expectedVersion != nil {
 		request.Header.Set("X-Expected-Version", fmt.Sprintf("%d", *expectedVersion))
 	}
+	if terminal != "" {
+		request.Header.Set("X-Cellar-Terminal-ID", terminal)
+	}
 	raw, err := c.http.Do(request)
 	if err != nil {
 		return response{}, fmt.Errorf("perform request: %w", err)
@@ -62,7 +77,7 @@ func (c *client) call(
 	if err != nil {
 		return response{}, fmt.Errorf("read response: %w", err)
 	}
-	return response{status: raw.StatusCode, body: content}, nil
+	return response{status: raw.StatusCode, body: content, headers: raw.Header}, nil
 }
 
 func (r response) decode(target any) error {

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ratelimit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 )
 
@@ -21,8 +22,18 @@ type setStepsRequest struct {
 	Steps []domain.FormulaStep `json:"steps"`
 }
 
-func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
-	mux.HandleFunc("POST /v1/formulas", func(response http.ResponseWriter, request *http.Request) {
+func registerFormulaRoutes(mux *http.ServeMux, app *service.Service, limiter *ratelimit.Limiter) {
+	mux.HandleFunc("POST /v1/formulas", guarded(limiter, ratelimit.CategoryFormula, createFormula(app)))
+	// Read-only routes are never blocked by a terminal quota.
+	mux.HandleFunc("GET /v1/formulas", listFormulas(app))
+	mux.HandleFunc("GET /v1/formulas/{id}", getFormula(app))
+	mux.HandleFunc("PUT /v1/formulas/{id}/steps", guarded(limiter, ratelimit.CategoryFormula, setFormulaSteps(app)))
+	mux.HandleFunc("POST /v1/formulas/{id}/approve", guarded(limiter, ratelimit.CategoryFormula, approveFormula(app)))
+	mux.HandleFunc("POST /v1/formulas/{id}/retire", guarded(limiter, ratelimit.CategoryFormula, retireFormula(app)))
+}
+
+func createFormula(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		body, err := decodeJSON[createFormulaRequest](response, request)
 		if !handleDecode(response, err) {
 			return
@@ -41,27 +52,33 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusCreated, formula)
-	})
+	}
+}
 
-	mux.HandleFunc("GET /v1/formulas", func(response http.ResponseWriter, _ *http.Request) {
+func listFormulas(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, _ *http.Request) {
 		formulas, err := app.ListFormulas()
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
 		writeJSON(response, http.StatusOK, map[string]any{"formulas": formulas})
-	})
+	}
+}
 
-	mux.HandleFunc("GET /v1/formulas/{id}", func(response http.ResponseWriter, request *http.Request) {
+func getFormula(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		formula, err := app.GetFormula(request.PathValue("id"))
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
 		writeJSON(response, http.StatusOK, formula)
-	})
+	}
+}
 
-	mux.HandleFunc("PUT /v1/formulas/{id}/steps", func(response http.ResponseWriter, request *http.Request) {
+func setFormulaSteps(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		body, err := decodeJSON[setStepsRequest](response, request)
 		if !handleDecode(response, err) {
 			return
@@ -77,9 +94,11 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, formula)
-	})
+	}
+}
 
-	mux.HandleFunc("POST /v1/formulas/{id}/approve", func(response http.ResponseWriter, request *http.Request) {
+func approveFormula(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		expected, err := expectedVersion(request)
 		if !handleDecode(response, err) {
 			return
@@ -91,9 +110,11 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, formula)
-	})
+	}
+}
 
-	mux.HandleFunc("POST /v1/formulas/{id}/retire", func(response http.ResponseWriter, request *http.Request) {
+func retireFormula(app *service.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		expected, err := expectedVersion(request)
 		if !handleDecode(response, err) {
 			return
@@ -105,5 +126,5 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 			return
 		}
 		writeJSON(response, http.StatusOK, formula)
-	})
+	}
 }

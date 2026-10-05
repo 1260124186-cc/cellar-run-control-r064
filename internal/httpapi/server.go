@@ -3,14 +3,19 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ratelimit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 )
 
-func NewHandler(app *service.Service) http.Handler {
+func NewHandler(app *service.Service, limiter *ratelimit.Limiter) http.Handler {
 	mux := http.NewServeMux()
-	registerFormulaRoutes(mux, app)
-	registerVesselRoutes(mux, app)
-	registerRunRoutes(mux, app)
+	registerFormulaRoutes(mux, app, limiter)
+	registerVesselRoutes(mux, app, limiter)
+	registerRunRoutes(mux, app, limiter)
+	registerQuotaRoutes(mux, limiter)
+	// Health checks and read-only detail routes are intentionally registered
+	// without quota guards: they must keep answering even when a terminal is
+	// being throttled.
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, map[string]any{
 			"status":   "ok",
